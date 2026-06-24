@@ -215,6 +215,16 @@ a{color:var(--azul-cyan);text-decoration:none;}
 }
 .btn-logout:hover{background:rgba(255,255,255,0.12);}
 
+.sync-indicator{
+  font-size:11px;font-weight:600;white-space:nowrap;
+  padding:5px 10px;border-radius:20px;
+  background:rgba(255,255,255,0.08);
+}
+.sync-indicator.sync-pendiente{color:var(--azul-claro);}
+.sync-indicator.sync-progreso{color:var(--azul-claro);}
+.sync-indicator.sync-ok{color:#bfe9d4;}
+.sync-indicator.sync-error{color:#f3c4c4;}
+
 .tabs{
   background:var(--blanco);
   border-bottom:1px solid var(--linea);
@@ -515,6 +525,8 @@ td.wrap{white-space:normal;min-width:160px;}
       <div class="topbar-title">Cargas en Tránsito<small>Control de pagos &amp; logística</small></div>
     </div>
     <div class="topbar-right">
+      <span class="sync-indicator" id="syncIndicator"></span>
+      <button class="btn-logout" id="driveConfigBtn" title="Configurar respaldo en Drive">☁ Drive</button>
       <div class="topbar-user">
         <div class="user-badge" id="userBadge">A</div>
         <div>
@@ -625,11 +637,104 @@ function seedIfEmpty() {
 }
 
 function getUsers() { return JSON.parse(localStorage.getItem(STORAGE_KEYS.USERS) || '[]'); }
-function setUsers(u) { localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(u)); }
+function setUsers(u) { localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(u)); programarSyncDrive(); }
 function getOrders() { return JSON.parse(localStorage.getItem(STORAGE_KEYS.ORDERS) || '[]'); }
-function setOrders(o) { localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(o)); }
+function setOrders(o) { localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(o)); programarSyncDrive(); }
 function getProveedores() { return JSON.parse(localStorage.getItem(STORAGE_KEYS.PROVEEDORES) || '[]'); }
-function setProveedores(p) { localStorage.setItem(STORAGE_KEYS.PROVEEDORES, JSON.stringify(p)); }
+function setProveedores(p) { localStorage.setItem(STORAGE_KEYS.PROVEEDORES, JSON.stringify(p)); programarSyncDrive(); }
+
+// ============================================================
+// SINCRONIZACIÓN CON GOOGLE DRIVE (respaldo en tiempo real)
+// ============================================================
+
+const DRIVE_SYNC_URL_KEY = 'tooltek_ctt_drive_url';
+let syncDriveTimer = null;
+let syncEnProgreso = false;
+
+function getDriveSyncUrl() {
+  return localStorage.getItem(DRIVE_SYNC_URL_KEY) || '';
+}
+function setDriveSyncUrl(url) {
+  localStorage.setItem(DRIVE_SYNC_URL_KEY, url.trim());
+}
+
+function programarSyncDrive() {
+  if (!getDriveSyncUrl()) return; // sin URL configurada, no hay nada que sincronizar
+  clearTimeout(syncDriveTimer);
+  setSyncIndicator('pendiente');
+  syncDriveTimer = setTimeout(ejecutarSyncDrive, 1500);
+}
+
+async function ejecutarSyncDrive() {
+  const url = getDriveSyncUrl();
+  if (!url || syncEnProgreso) return;
+  syncEnProgreso = true;
+  setSyncIndicator('sincronizando');
+  try {
+    const payload = {
+      action: 'guardarTodo',
+      data: {
+        orders: getOrders(),
+        proveedores: getProveedores(),
+        users: getUsers(),
+      },
+    };
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // evita preflight CORS en Apps Script
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    if (!json.ok) throw new Error(json.error || 'Respuesta de error del servidor');
+    setSyncIndicator('ok');
+  } catch (err) {
+    setSyncIndicator('error');
+  } finally {
+    syncEnProgreso = false;
+  }
+}
+
+async function cargarDesdeDrive() {
+  const url = getDriveSyncUrl();
+  if (!url) return false;
+  setSyncIndicator('sincronizando');
+  try {
+    const res = await fetch(url, { method: 'GET' });
+    const json = await res.json();
+    if (!json.ok) throw new Error(json.error || 'Error desconocido');
+    const data = json.data || {};
+    if (Array.isArray(data.orders) && data.orders.length) {
+      localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(data.orders));
+    }
+    if (Array.isArray(data.proveedores) && data.proveedores.length) {
+      localStorage.setItem(STORAGE_KEYS.PROVEEDORES, JSON.stringify(data.proveedores));
+    }
+    if (Array.isArray(data.users) && data.users.length) {
+      localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(data.users));
+    }
+    setSyncIndicator('ok');
+    return true;
+  } catch (err) {
+    setSyncIndicator('error');
+    return false;
+  }
+}
+
+function setSyncIndicator(estado) {
+  const el = document.getElementById('syncIndicator');
+  if (!el) return;
+  const map = {
+    pendiente: { text: '● Cambios sin guardar', cls: 'sync-pendiente' },
+    sincronizando: { text: '↻ Sincronizando con Drive…', cls: 'sync-progreso' },
+    ok: { text: '✓ Respaldado en Drive', cls: 'sync-ok' },
+    error: { text: '⚠ Sin conexión a Drive', cls: 'sync-error' },
+    inactivo: { text: '', cls: '' },
+  };
+  const conf = map[estado] || map.inactivo;
+  el.textContent = conf.text;
+  el.className = 'sync-indicator ' + conf.cls;
+}
 
 function getSession() {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEYS.SESSION) || 'null'); }
@@ -1002,9 +1107,18 @@ function refrescarVistaActual() {
 // BOOT Y NAVEGACIÓN
 // ============================================================
 
-function boot() {
+async function boot() {
   seedIfEmpty();
   state.session = getSession();
+
+  // Si hay un respaldo en Drive configurado, intenta traer la versión más
+  // reciente antes de mostrar la app. Si falla (sin conexión), sigue con
+  // lo que ya hay en localStorage — eso es lo que permite "rescatar" en
+  // una emergencia si el navegador se vacía o se cambia de equipo.
+  if (getDriveSyncUrl()) {
+    await cargarDesdeDrive();
+  }
+
   state.orders = getOrders();
   state.proveedores = getProveedores();
   state.users = getUsers();
@@ -1977,6 +2091,66 @@ function exportarRespaldoExcel() {
 // INIT
 // ============================================================
 
+// ============================================================
+// MODAL — Configurar respaldo en Drive
+// ============================================================
+
+function abrirModalConfigDrive() {
+  const urlActual = getDriveSyncUrl();
+  const modal = document.getElementById('modalOverlay');
+  modal.querySelector('.modal').className = 'modal';
+  modal.querySelector('.modal').innerHTML = `
+    <div class="modal-head"><h3>☁ Respaldo en Google Drive</h3><button class="modal-close" onclick="cerrarModal()">✕</button></div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--tinta-suave);margin-top:0;">
+        Cada cambio en la app (nueva orden, pago marcado, edición, etc.) se guarda automáticamente
+        en una hoja de Google Sheets dentro de tu Drive. Si necesitas pegar o actualizar la URL del
+        Apps Script, hazlo aquí.
+      </p>
+      <div class="field">
+        <label>URL del Apps Script (termina en /exec)</label>
+        <input type="text" id="dc_url" value="${escapeHtml(urlActual)}" placeholder="https://script.google.com/macros/s/AKfycb.../exec">
+      </div>
+      <div id="dc_estado" style="margin-top:10px;font-size:12.5px;"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" onclick="probarConexionDrive()">Probar conexión</button>
+      <button class="btn btn-primary" onclick="guardarConfigDrive()">Guardar y sincronizar ahora</button>
+    </div>
+  `;
+  modal.classList.add('active');
+}
+
+function guardarConfigDrive() {
+  const url = document.getElementById('dc_url').value.trim();
+  if (!url) { toast('Ingresa la URL del Apps Script', 'err'); return; }
+  setDriveSyncUrl(url);
+  toast('URL guardada. Sincronizando…', 'ok');
+  ejecutarSyncDrive().then(() => {
+    toast('Respaldo en Drive actualizado', 'ok');
+  });
+  cerrarModal();
+}
+
+async function probarConexionDrive() {
+  const url = document.getElementById('dc_url').value.trim();
+  const estadoEl = document.getElementById('dc_estado');
+  if (!url) { estadoEl.innerHTML = '<span style="color:var(--rojo);">Ingresa una URL primero.</span>'; return; }
+  estadoEl.innerHTML = '<span style="color:var(--tinta-suave);">Probando conexión…</span>';
+  try {
+    const res = await fetch(url, { method: 'GET' });
+    const json = await res.json();
+    if (json.ok) {
+      const n = (json.data && json.data.orders) ? json.data.orders.length : 0;
+      estadoEl.innerHTML = `<span style="color:var(--verde);">✓ Conexión exitosa. El Sheet tiene ${n} órdenes registradas.</span>`;
+    } else {
+      estadoEl.innerHTML = `<span style="color:var(--rojo);">✕ El script respondió con error: ${escapeHtml(json.error || 'desconocido')}</span>`;
+    }
+  } catch (err) {
+    estadoEl.innerHTML = `<span style="color:var(--rojo);">✕ No se pudo conectar. Revisa que la URL sea correcta y que el script esté implementado como "Cualquier usuario".</span>`;
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   seedIfEmpty();
 
@@ -1988,6 +2162,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.getElementById('logoutBtn').addEventListener('click', doLogout);
+  document.getElementById('driveConfigBtn').addEventListener('click', abrirModalConfigDrive);
   document.getElementById('modalOverlay').addEventListener('click', (e) => {
     if (e.target.id === 'modalOverlay') cerrarModal();
   });
