@@ -240,6 +240,21 @@ a{color:var(--azul-cyan);text-decoration:none;}
   border-radius:10px;min-width:18px;height:18px;padding:0 5px;
   display:flex;align-items:center;justify-content:center;
 }
+.tab-group-label{
+  display:flex;align-items:center;
+  padding:0 10px 0 14px;
+  font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--tinta-suave);
+  position:relative;
+  white-space:nowrap;
+}
+.tab-group-label::before{
+  content:"";
+  width:1px;height:18px;
+  background:var(--linea);
+  margin-right:10px;
+}
+.tab-group-label:first-child::before{display:none;}
 
 .view{display:none;padding:22px 24px 48px;max-width:1400px;width:100%;margin:0 auto;flex:1;}
 .view.active{display:block;}
@@ -516,7 +531,6 @@ td.wrap{white-space:normal;min-width:160px;}
   <!-- ---------- Vistas: Administrador ---------- -->
   <div class="view" id="view-admin-usuarios"></div>
   <div class="view" id="view-admin-proveedores"></div>
-  <div class="view" id="view-admin-ordenes"></div>
 
   <!-- ---------- Vistas: Comex ---------- -->
   <div class="view" id="view-comex-bd"></div>
@@ -866,8 +880,12 @@ function renderShellForRole() {
   const tabsByRole = {
     [ROLES.ADMIN]: [
       { id: 'tab-admin-usuarios', label: 'Usuarios', icon: '👤' },
+      { id: 'tab-comex-bd', label: 'Base de Datos', icon: '📊', group: 'Comex' },
+      { id: 'tab-comex-nueva', label: 'Nueva Orden', icon: '➕', group: 'Comex' },
+      { id: 'tab-tes-calendario', label: 'Calendario de Pagos', icon: '📅', group: 'Tesorería' },
+      { id: 'tab-tes-alertas', label: 'Alertas', icon: '⚠️', dot: true, group: 'Tesorería' },
+      { id: 'tab-tes-listado', label: 'Listado de Pagos', icon: '📋', group: 'Tesorería' },
       { id: 'tab-admin-proveedores', label: 'Proveedores', icon: '🏭' },
-      { id: 'tab-admin-ordenes', label: 'Órdenes (todas)', icon: '📦' },
     ],
     [ROLES.COMEX]: [
       { id: 'tab-comex-bd', label: 'Base de Datos', icon: '📊' },
@@ -883,7 +901,17 @@ function renderShellForRole() {
   };
 
   const tabs = tabsByRole[s.role] || [];
+  let lastGroup = null;
   tabs.forEach((t, i) => {
+    if (s.role === ROLES.ADMIN && t.group && t.group !== lastGroup) {
+      const sep = document.createElement('div');
+      sep.className = 'tab-group-label';
+      sep.textContent = t.group;
+      tabsWrap.appendChild(sep);
+      lastGroup = t.group;
+    } else if (s.role === ROLES.ADMIN && !t.group) {
+      lastGroup = null;
+    }
     const btn = document.createElement('button');
     btn.className = 'tab-btn' + (i === 0 ? ' active' : '');
     btn.dataset.target = t.id;
@@ -916,7 +944,6 @@ function renderViewById(tabId) {
   const map = {
     'tab-admin-usuarios': renderAdminUsuarios,
     'tab-admin-proveedores': renderProveedoresView,
-    'tab-admin-ordenes': renderAdminOrdenes,
     'tab-comex-bd': renderComexBD,
     'tab-comex-nueva': renderComexNueva,
     'tab-comex-proveedores': renderProveedoresView,
@@ -1623,35 +1650,6 @@ function eliminarUsuario(idx) {
   setUsers(state.users);
   toast('Usuario eliminado', 'ok');
   renderAdminUsuarios();
-}
-
-// ============================================================
-// VISTA ADMINISTRADOR — Todas las órdenes (solo lectura + export)
-// ============================================================
-
-function renderAdminOrdenes() {
-  const view = document.getElementById('view-admin-ordenes');
-  view.innerHTML = `
-    <div class="page-head">
-      <div><h1>Todas las órdenes</h1><p>${state.orders.length} órdenes en el sistema (vista de administrador, solo lectura).</p></div>
-      <div class="page-actions"><button class="btn btn-ghost" onclick="exportarRespaldoExcel()">⬇ Respaldo Excel</button></div>
-    </div>
-    <div class="panel"><div class="table-wrap" id="adminOrdenesTable"></div></div>
-  `;
-  const rows = state.orders.slice().sort((a,b)=>(b.orderRef||0)-(a.orderRef||0)).map(o => `
-    <tr>
-      <td class="mono">${escapeHtml(o.orderRef??'—')}</td>
-      <td class="wrap">${escapeHtml(o.consignor)}</td>
-      <td class="mono">${escapeHtml(o.invoice||'—')}</td>
-      <td>${escapeHtml(o.status||'—')}</td>
-      <td class="num">${fmtMoney(o.monto,o.moneda)}</td>
-      <td class="mono">${escapeHtml(o.vencimiento||'—')}</td>
-      <td class="num">${fmtMoney(o.pendiente,o.moneda)}</td>
-      <td><button class="btn btn-ghost btn-sm" onclick="abrirDetalleOrden('${o.id}')">Ver</button></td>
-    </tr>`).join('');
-  document.getElementById('adminOrdenesTable').innerHTML = `
-    <table><thead><tr><th>OC</th><th>Proveedor</th><th>Invoice</th><th>Status</th><th>Monto</th><th>Condición</th><th>Pendiente</th><th></th></tr></thead>
-    <tbody>${rows}</tbody></table>`;
 }
 
 // ============================================================
