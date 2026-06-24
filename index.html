@@ -757,6 +757,7 @@ function calcularHitos(o) {
     const montoSaldo = o.monto ? Math.round(o.monto * (100 - pct) / 100 * 100) / 100 : null;
 
     hitos.push({
+      key: 'anticipo',
       tipo: 'anticipo',
       label: `Anticipo ${pct}%`,
       monto: montoAnticipo,
@@ -765,6 +766,7 @@ function calcularHitos(o) {
       montoPagado: o.pagoAnticipo || 0,
     });
     hitos.push({
+      key: 'saldo',
       tipo: 'saldo',
       label: `Saldo ${100 - pct}%`,
       monto: montoSaldo,
@@ -800,6 +802,7 @@ function calcularHitos(o) {
     const pagado = (o.pgdo || '').toUpperCase() === 'SI' || (o.pendiente !== null && o.pendiente !== undefined && o.pendiente <= 0.5);
 
     hitos.push({
+      key: 'unico',
       tipo: 'unico',
       label: 'Pago 100%',
       monto: o.monto,
@@ -808,6 +811,21 @@ function calcularHitos(o) {
       montoPagado: (o.pagoAnticipo || 0) + (o.pagoSaldo || 0),
     });
   }
+
+  // Aplicar overrides manuales de Tesorería (pagado manual / fecha postergada)
+  const overrides = o.hitosOverride || {};
+  hitos.forEach(h => {
+    const ov = overrides[h.key];
+    if (ov) {
+      if (ov.pagadoManual) h.pagado = true;
+      if (ov.fechaPostergada) {
+        h.fechaOriginal = h.fecha;
+        h.fecha = ov.fechaPostergada;
+        h.postergado = true;
+      }
+      h.historial = ov.historial || [];
+    }
+  });
 
   return hitos.filter(h => h.monto !== null && h.monto !== undefined);
 }
@@ -847,6 +865,140 @@ function listaHitosAtrasados(orders) {
 }
 
 // ============================================================
+// GESTIÓN MANUAL DE HITOS — Tesorería
+// marcarComoPagado / postergarFecha, con historial de comentarios
+// ============================================================
+
+function obtenerOverride(orden, key) {
+  orden.hitosOverride = orden.hitosOverride || {};
+  orden.hitosOverride[key] = orden.hitosOverride[key] || { historial: [] };
+  return orden.hitosOverride[key];
+}
+
+function marcarHitoComoPagado(orderId, hitoKey, comentario) {
+  const orden = state.orders.find(o => o.id === orderId);
+  if (!orden) return;
+  const ov = obtenerOverride(orden, hitoKey);
+  ov.pagadoManual = true;
+  ov.historial.push({
+    accion: 'pagado',
+    comentario: comentario || '',
+    usuario: state.session.nombre || state.session.email,
+    fecha: new Date().toISOString(),
+  });
+  setOrders(state.orders);
+}
+
+function postergarHitoFecha(orderId, hitoKey, nuevaFecha, comentario) {
+  const orden = state.orders.find(o => o.id === orderId);
+  if (!orden) return;
+  const ov = obtenerOverride(orden, hitoKey);
+  ov.fechaPostergada = nuevaFecha;
+  ov.historial.push({
+    accion: 'postergado',
+    comentario: comentario || '',
+    nuevaFecha,
+    usuario: state.session.nombre || state.session.email,
+    fecha: new Date().toISOString(),
+  });
+  setOrders(state.orders);
+}
+
+// ============================================================
+// MODAL — Gestionar pago (Tesorería): marcar pagado / postergar fecha
+// ============================================================
+
+function abrirModalGestionPago(orderId, hitoKey) {
+  const o = state.orders.find(x => x.id === orderId);
+  if (!o) return;
+  const hito = calcularHitos(o).find(h => h.key === hitoKey);
+  if (!hito) return;
+
+  const historialHtml = (hito.historial || []).slice().reverse().map(h => `
+    <div style="padding:9px 0;border-bottom:1px solid var(--linea);">
+      <div style="display:flex;justify-content:space-between;gap:8px;">
+        <span class="badge ${h.accion === 'pagado' ? 'badge-verde' : 'badge-cyan'}">${h.accion === 'pagado' ? 'Marcado como pagado' : 'Fecha postergada → ' + fmtDate(h.nuevaFecha)}</span>
+        <span class="muted" style="font-size:11px;">${new Date(h.fecha).toLocaleString('es-CL')}</span>
+      </div>
+      ${h.comentario ? `<p style="margin:6px 0 0;font-size:12.5px;">"${escapeHtml(h.comentario)}"</p>` : ''}
+      <p class="muted" style="margin:3px 0 0;font-size:11px;">— ${escapeHtml(h.usuario)}</p>
+    </div>`).join('') || `<p class="muted" style="font-size:12.5px;">Sin movimientos registrados aún.</p>`;
+
+  const modal = document.getElementById('modalOverlay');
+  modal.querySelector('.modal').className = 'modal';
+  modal.querySelector('.modal').innerHTML = `
+    <div class="modal-head"><h3>Gestionar pago — ${escapeHtml(hito.label)}</h3><button class="modal-close" onclick="cerrarModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="detail-grid" style="margin-bottom:18px;">
+        <div class="detail-item"><dt>Proveedor</dt><dd>${escapeHtml(o.consignor)}</dd></div>
+        <div class="detail-item"><dt>Invoice / OC</dt><dd class="mono">${escapeHtml(o.invoice || o.orderRef || '—')}</dd></div>
+        <div class="detail-item"><dt>Monto del hito</dt><dd class="mono">${fmtMoney(hito.monto, o.moneda)}</dd></div>
+        <div class="detail-item"><dt>Fecha vigente</dt><dd class="mono">${fmtDate(hito.fecha)}</dd></div>
+      </div>
+
+      <div id="gestionPagoForms">
+        <div style="display:flex;gap:10px;margin-bottom:16px;">
+          <button class="btn btn-secondary" style="flex:1;" onclick="mostrarFormGestion('pagar')" id="btnTabPagar">✓ Marcar como pagado</button>
+          <button class="btn btn-secondary" style="flex:1;" onclick="mostrarFormGestion('postergar')" id="btnTabPostergar">📅 Postergar fecha</button>
+        </div>
+
+        <div id="formPagar" style="display:none;">
+          <div class="field"><label>Comentario (opcional)</label>
+            <textarea id="gp_comentarioPagar" rows="3" style="width:100%;padding:10px 13px;border:1.5px solid var(--gris-300);border-radius:5px;background:var(--gris-100);font-family:inherit;font-size:13.5px;" placeholder="Ej: Transferencia realizada el 20-06, comprobante N°..."></textarea>
+          </div>
+          <button class="btn btn-primary btn-block" onclick="confirmarMarcarPagado('${o.id}','${hitoKey}')">Confirmar pago</button>
+        </div>
+
+        <div id="formPostergar" style="display:none;">
+          <div class="field"><label>Nueva fecha de pago *</label><input type="date" id="gp_nuevaFecha" value="${hito.fecha || ''}"></div>
+          <div class="field"><label>Motivo de la postergación *</label>
+            <textarea id="gp_comentarioPostergar" rows="3" style="width:100%;padding:10px 13px;border:1.5px solid var(--gris-300);border-radius:5px;background:var(--gris-100);font-family:inherit;font-size:13.5px;" placeholder="Ej: Proveedor solicitó extender plazo por demora en BL..." required></textarea>
+            <p class="help-text">Obligatorio: explica por qué se posterga este pago.</p>
+          </div>
+          <button class="btn btn-primary btn-block" onclick="confirmarPostergarFecha('${o.id}','${hitoKey}')">Confirmar postergación</button>
+        </div>
+      </div>
+
+      <p class="section-title" style="margin-top:22px;">Historial de movimientos</p>
+      <div>${historialHtml}</div>
+    </div>
+    <div class="modal-foot"><button class="btn btn-secondary" onclick="cerrarModal()">Cerrar</button></div>
+  `;
+  modal.classList.add('active');
+}
+
+function mostrarFormGestion(tipo) {
+  document.getElementById('formPagar').style.display = tipo === 'pagar' ? 'block' : 'none';
+  document.getElementById('formPostergar').style.display = tipo === 'postergar' ? 'block' : 'none';
+  document.getElementById('btnTabPagar').className = 'btn ' + (tipo === 'pagar' ? 'btn-primary' : 'btn-secondary');
+  document.getElementById('btnTabPostergar').className = 'btn ' + (tipo === 'postergar' ? 'btn-primary' : 'btn-secondary');
+}
+
+function confirmarMarcarPagado(orderId, hitoKey) {
+  const comentario = document.getElementById('gp_comentarioPagar').value.trim();
+  marcarHitoComoPagado(orderId, hitoKey, comentario);
+  cerrarModal();
+  toast('Pago marcado como realizado', 'ok');
+  refrescarVistaActual();
+}
+
+function confirmarPostergarFecha(orderId, hitoKey) {
+  const nuevaFecha = document.getElementById('gp_nuevaFecha').value;
+  const comentario = document.getElementById('gp_comentarioPostergar').value.trim();
+  if (!nuevaFecha) { toast('Selecciona la nueva fecha', 'err'); return; }
+  if (!comentario) { toast('El motivo de la postergación es obligatorio', 'err'); return; }
+  postergarHitoFecha(orderId, hitoKey, nuevaFecha, comentario);
+  cerrarModal();
+  toast('Fecha de pago postergada', 'ok');
+  refrescarVistaActual();
+}
+
+function refrescarVistaActual() {
+  const activeTab = document.querySelector('.tab-btn.active');
+  if (activeTab) renderViewById(activeTab.dataset.target);
+}
+
+// ============================================================
 // BOOT Y NAVEGACIÓN
 // ============================================================
 
@@ -880,7 +1032,7 @@ function renderShellForRole() {
   const tabsByRole = {
     [ROLES.ADMIN]: [
       { id: 'tab-admin-usuarios', label: 'Usuarios', icon: '👤' },
-      { id: 'tab-comex-bd', label: 'Base de Datos', icon: '📊', group: 'Comex' },
+      { id: 'tab-comex-bd', label: 'Carga en Tránsito', icon: '📊', group: 'Comex' },
       { id: 'tab-comex-nueva', label: 'Nueva Orden', icon: '➕', group: 'Comex' },
       { id: 'tab-tes-calendario', label: 'Calendario de Pagos', icon: '📅', group: 'Tesorería' },
       { id: 'tab-tes-alertas', label: 'Alertas', icon: '⚠️', dot: true, group: 'Tesorería' },
@@ -888,7 +1040,7 @@ function renderShellForRole() {
       { id: 'tab-admin-proveedores', label: 'Proveedores', icon: '🏭' },
     ],
     [ROLES.COMEX]: [
-      { id: 'tab-comex-bd', label: 'Base de Datos', icon: '📊' },
+      { id: 'tab-comex-bd', label: 'Carga en Tránsito', icon: '📊' },
       { id: 'tab-comex-nueva', label: 'Nueva Orden', icon: '➕' },
       { id: 'tab-comex-proveedores', label: 'Proveedores', icon: '🏭' },
     ],
@@ -1125,14 +1277,20 @@ function renderAlertas() {
 function filaAlerta(h, tipo) {
   const f = parseISO(h.fecha);
   const dias = f ? Math.abs(daysBetween(todayDate(), f)) : '—';
+  const fechaHtml = h.postergado
+    ? `<span class="mono" style="text-decoration:line-through;color:var(--tinta-suave);font-size:11px;">${fmtDate(h.fechaOriginal)}</span><br><span class="mono">${fmtDate(h.fecha)}</span> <span class="badge badge-cyan" style="margin-left:2px;">Postergado</span>`
+    : `<span class="mono">${fmtDate(h.fecha)}</span>`;
   return `<tr class="${tipo === 'atrasado' ? 'row-atrasado' : 'row-proximo'}">
     <td class="wrap">${escapeHtml(h.orden.consignor)}</td>
     <td class="mono">${escapeHtml(h.orden.invoice || h.orden.orderRef || '—')}</td>
     <td>${escapeHtml(h.label)}</td>
     <td class="num">${fmtMoney(h.monto - (h.montoPagado || 0), h.orden.moneda)}</td>
-    <td class="mono">${fmtDate(h.fecha)}</td>
+    <td>${fechaHtml}</td>
     <td class="num"><span class="badge ${tipo === 'atrasado' ? 'badge-rojo' : 'badge-ambar'}">${dias} d</span></td>
-    <td><button class="btn btn-ghost btn-sm" onclick="abrirDetalleOrden('${h.orden.id}')">Ver</button></td>
+    <td>
+      <button class="btn btn-ghost btn-sm" onclick="abrirDetalleOrden('${h.orden.id}')">Ver</button>
+      <button class="btn btn-primary btn-sm" onclick="abrirModalGestionPago('${h.orden.id}','${h.key}')">Gestionar</button>
+    </td>
   </tr>`;
 }
 
@@ -1197,16 +1355,24 @@ function renderTesListadoTable() {
   const badgeForEstado = { atrasado: 'badge-rojo', proximo: 'badge-ambar', vigente: 'badge-cyan', pagado: 'badge-verde' };
   const labelForEstado = { atrasado: 'Atrasado', proximo: 'Próximo', vigente: 'Vigente', pagado: 'Pagado' };
 
-  const rows = filtered.map(h => `
+  const rows = filtered.map(h => {
+    const fechaHtml = h.postergado
+      ? `<span class="mono" style="text-decoration:line-through;color:var(--tinta-suave);font-size:11px;">${fmtDate(h.fechaOriginal)}</span><br><span class="mono">${fmtDate(h.fecha)}</span>`
+      : `<span class="mono">${fmtDate(h.fecha)}</span>`;
+    return `
     <tr class="${h.estado === 'atrasado' ? 'row-atrasado' : h.estado === 'proximo' ? 'row-proximo' : ''}">
       <td class="wrap">${escapeHtml(h.orden.consignor)}</td>
       <td class="mono">${escapeHtml(h.orden.invoice || h.orden.orderRef || '—')}</td>
       <td>${escapeHtml(h.label)}</td>
       <td class="num">${fmtMoney(h.monto, h.orden.moneda)}</td>
-      <td class="mono">${fmtDate(h.fecha)}</td>
+      <td>${fechaHtml}</td>
       <td><span class="badge ${badgeForEstado[h.estado]}">${labelForEstado[h.estado]}</span></td>
-      <td><button class="btn btn-ghost btn-sm" onclick="abrirDetalleOrden('${h.orden.id}')">Ver</button></td>
-    </tr>`).join('');
+      <td>
+        <button class="btn btn-ghost btn-sm" onclick="abrirDetalleOrden('${h.orden.id}')">Ver</button>
+        ${h.estado !== 'pagado' ? `<button class="btn btn-primary btn-sm" onclick="abrirModalGestionPago('${h.orden.id}','${h.key}')">Gestionar</button>` : ''}
+      </td>
+    </tr>`;
+  }).join('');
 
   document.getElementById('tesListadoTable').innerHTML = `
     <table>
@@ -1225,7 +1391,7 @@ function renderComexBD() {
 
   view.innerHTML = `
     <div class="page-head">
-      <div><h1>Base de datos — Cargas en tránsito</h1><p>${state.orders.length} órdenes registradas. Datos originados desde Odoo / control de Comex.</p></div>
+      <div><h1>Carga en tránsito</h1><p>${state.orders.length} órdenes registradas. Datos originados desde Odoo / control de Comex.</p></div>
       <div class="page-actions">
         <button class="btn btn-ghost" onclick="exportarRespaldoExcel()">⬇ Respaldo Excel</button>
       </div>
@@ -1284,7 +1450,10 @@ function renderComexTable() {
       <td class="num">${fmtMoney(o.monto, o.moneda)}</td>
       <td class="mono">${escapeHtml(o.vencimiento||'—')}</td>
       <td class="num">${fmtMoney(o.pendiente, o.moneda)}</td>
-      <td><button class="btn btn-ghost btn-sm" onclick="abrirDetalleOrden('${o.id}')">Ver</button></td>
+      <td>
+        <button class="btn btn-ghost btn-sm" onclick="abrirDetalleOrden('${o.id}')">Ver</button>
+        <button class="btn btn-ghost btn-sm" onclick="abrirModalEditarOrden('${o.id}')">Editar</button>
+      </td>
     </tr>`).join('');
 
   document.getElementById('comexTable').innerHTML = `
@@ -1429,6 +1598,110 @@ function crearNuevaOrden() {
 }
 
 // ============================================================
+// MODAL — Editar orden existente (Administrador y Comex)
+// ============================================================
+
+function abrirModalEditarOrden(orderId) {
+  const o = state.orders.find(x => x.id === orderId);
+  if (!o) return;
+  const provs = state.proveedores.slice().sort((a,b) => a.nombre.localeCompare(b.nombre));
+  const provNames = provs.map(p => p.nombre);
+
+  const modal = document.getElementById('modalOverlay');
+  modal.querySelector('.modal').className = 'modal modal-lg';
+  modal.querySelector('.modal').innerHTML = `
+    <div class="modal-head"><h3>Editar orden ${escapeHtml(o.orderRef ?? '')} — ${escapeHtml(o.consignor)}</h3><button class="modal-close" onclick="cerrarModal()">✕</button></div>
+    <div class="modal-body">
+      <form id="editarOrdenForm">
+        <div class="form-grid">
+          <div class="field">
+            <label>Proveedor *</label>
+            <select id="e_consignor" required>
+              ${provNames.map(p => `<option value="${escapeHtml(p)}" ${p===o.consignor?'selected':''}>${escapeHtml(p)}</option>`).join('')}
+              ${!provNames.includes(o.consignor) ? `<option value="${escapeHtml(o.consignor)}" selected>${escapeHtml(o.consignor)}</option>` : ''}
+            </select>
+          </div>
+          <div class="field"><label>N° Orden Ref (OC) *</label><input type="number" id="e_orderRef" required value="${escapeHtml(o.orderRef ?? '')}"></div>
+          <div class="field"><label>Invoice</label><input type="text" id="e_invoice" value="${escapeHtml(o.invoice||'')}"></div>
+          <div class="field"><label>Transporte</label>
+            <select id="e_trans"><option value="SEA" ${o.trans==='SEA'?'selected':''}>SEA — Marítimo</option><option value="AIR" ${o.trans==='AIR'?'selected':''}>AIR — Aéreo</option></select>
+          </div>
+          <div class="field"><label>Modo</label>
+            <select id="e_mode"><option value="FCL" ${o.mode==='FCL'?'selected':''}>FCL</option><option value="LCL" ${o.mode==='LCL'?'selected':''}>LCL</option></select>
+          </div>
+          <div class="field"><label>Origen (código puerto)</label><input type="text" id="e_origin" value="${escapeHtml(o.origin||'')}"></div>
+          <div class="field"><label>House / BL</label><input type="text" id="e_house" value="${escapeHtml(o.house||'')}"></div>
+          <div class="field"><label>Fecha conf. OC</label><input type="date" id="e_fechaConfOC" value="${esFechaValida(o.fechaConfOC)?o.fechaConfOC:''}"></div>
+          <div class="field"><label>ETD</label><input type="date" id="e_etd" value="${esFechaValida(o.etd)?o.etd:''}"></div>
+          <div class="field"><label>ETA</label><input type="date" id="e_eta" value="${esFechaValida(o.eta)?o.eta:''}"></div>
+          <div class="field"><label>Status</label>
+            <select id="e_status">${STATUS_OC.map(s => `<option value="${s}" ${s===o.status?'selected':''}>${s}</option>`).join('')}</select>
+          </div>
+          <div class="field"><label>Status Documentación</label>
+            <select id="e_statusDoc">${STATUS_DOC.map(s => `<option value="${s}" ${s===o.statusDoc?'selected':''}>${s}</option>`).join('')}</select>
+          </div>
+          <div class="field"><label>Monto total *</label><input type="number" step="0.01" id="e_monto" required value="${o.monto ?? ''}"></div>
+          <div class="field"><label>Moneda</label>
+            <select id="e_moneda">${MONEDAS.map(m => `<option value="${m}" ${m===o.moneda?'selected':''}>${m}</option>`).join('')}</select>
+          </div>
+          <div class="field full"><label>Condición de pago *</label>
+            <select id="e_vencimiento" required>${CONDICIONES_PAGO.map(c => `<option value="${c}" ${c===o.vencimiento?'selected':''}>${c}</option>`).join('')}</select>
+          </div>
+          <div class="field"><label>Pago anticipo registrado</label><input type="number" step="0.01" id="e_pagoAnticipo" value="${o.pagoAnticipo ?? 0}"></div>
+          <div class="field"><label>Fecha de anticipo</label><input type="date" id="e_fechaAnticipo" value="${esFechaValida(o.fechaAnticipo)?o.fechaAnticipo:''}"></div>
+          <div class="field"><label>Pago saldo registrado</label><input type="number" step="0.01" id="e_pagoSaldo" value="${o.pagoSaldo ?? 0}"></div>
+          <div class="field"><label>Fecha de saldo</label><input type="date" id="e_fechaSaldo" value="${esFechaValida(o.fechaSaldo)?o.fechaSaldo:''}"></div>
+        </div>
+      </form>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" onclick="cerrarModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="guardarEdicionOrden('${o.id}')">Guardar cambios</button>
+    </div>
+  `;
+  modal.classList.add('active');
+}
+
+function guardarEdicionOrden(orderId) {
+  const o = state.orders.find(x => x.id === orderId);
+  if (!o) return;
+
+  const monto = Number(document.getElementById('e_monto').value);
+  const pagoAnticipo = Number(document.getElementById('e_pagoAnticipo').value) || 0;
+  const pagoSaldo = Number(document.getElementById('e_pagoSaldo').value) || 0;
+
+  o.consignor = document.getElementById('e_consignor').value;
+  o.orderRef = Number(document.getElementById('e_orderRef').value) || document.getElementById('e_orderRef').value;
+  o.invoice = document.getElementById('e_invoice').value || null;
+  o.trans = document.getElementById('e_trans').value;
+  o.mode = document.getElementById('e_mode').value;
+  o.origin = document.getElementById('e_origin').value || null;
+  o.house = document.getElementById('e_house').value || null;
+  o.fechaConfOC = document.getElementById('e_fechaConfOC').value || null;
+  o.etd = document.getElementById('e_etd').value || null;
+  o.eta = document.getElementById('e_eta').value || null;
+  o.status = document.getElementById('e_status').value;
+  o.statusDoc = document.getElementById('e_statusDoc').value;
+  o.monto = monto;
+  o.moneda = document.getElementById('e_moneda').value;
+  o.vencimiento = document.getElementById('e_vencimiento').value;
+  o.pagoAnticipo = pagoAnticipo;
+  o.fechaAnticipo = document.getElementById('e_fechaAnticipo').value || (pagoAnticipo > 0 ? o.fechaAnticipo : 'sin anticipo');
+  o.pagoSaldo = pagoSaldo;
+  o.fechaSaldo = document.getElementById('e_fechaSaldo').value || null;
+  o.pendiente = Math.max(0, monto - pagoAnticipo - pagoSaldo);
+  o.pgdo = o.pendiente <= 0.5 ? 'SI' : (pagoAnticipo > 0 || pagoSaldo > 0 ? 'Parcial' : 'NO');
+
+  setOrders(state.orders);
+  cerrarModal();
+  toast('Orden actualizada · ' + (o.invoice || o.orderRef), 'ok');
+
+  // Refrescar la vista actual
+  const activeTab = document.querySelector('.tab-btn.active');
+  if (activeTab) renderViewById(activeTab.dataset.target);
+}
+
+// ============================================================
 // VISTA PROVEEDORES (compartida entre Comex / Tesorería / Admin)
 // ============================================================
 
@@ -1525,16 +1798,21 @@ function abrirDetalleOrden(orderId) {
   const o = state.orders.find(x => x.id === orderId);
   if (!o) return;
   const hitos = calcularHitos(o);
+  const puedeGestionar = state.session.role === ROLES.TESORERIA || state.session.role === ROLES.ADMIN;
 
   const hitosHtml = hitos.map(h => {
     const est = estadoHito(h);
     const badge = { atrasado:'badge-rojo', proximo:'badge-ambar', vigente:'badge-cyan', pagado:'badge-verde' }[est];
     const label = { atrasado:'Atrasado', proximo:'Próximo', vigente:'Vigente', pagado:'Pagado' }[est];
+    const fechaCell = h.postergado
+      ? `<span class="mono" style="text-decoration:line-through;color:var(--tinta-suave);font-size:11px;">${fmtDate(h.fechaOriginal)}</span><br><span class="mono">${fmtDate(h.fecha)}</span>`
+      : `<span class="mono">${fmtDate(h.fecha)}</span>`;
     return `<tr>
       <td>${escapeHtml(h.label)}</td>
       <td class="num">${fmtMoney(h.monto, o.moneda)}</td>
-      <td class="mono">${fmtDate(h.fecha)}</td>
+      <td>${fechaCell}</td>
       <td><span class="badge ${badge}">${label}</span></td>
+      ${puedeGestionar ? `<td>${est !== 'pagado' ? `<button class="btn btn-ghost btn-sm" onclick="abrirModalGestionPago('${o.id}','${h.key}')">Gestionar</button>` : ''}</td>` : ''}
     </tr>`;
   }).join('');
 
@@ -1557,7 +1835,7 @@ function abrirDetalleOrden(orderId) {
       </div>
       <p class="section-title" style="margin-top:22px;">Hitos de pago</p>
       <div class="table-wrap"><table>
-        <thead><tr><th>Hito</th><th>Monto</th><th>Fecha</th><th>Estado</th></tr></thead>
+        <thead><tr><th>Hito</th><th>Monto</th><th>Fecha</th><th>Estado</th>${puedeGestionar?'<th></th>':''}</tr></thead>
         <tbody>${hitosHtml}</tbody>
       </table></div>
     </div>
