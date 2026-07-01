@@ -361,6 +361,8 @@ td.wrap{white-space:normal;min-width:160px;}
 .row-atrasado:hover{background:#f7dcdc !important;}
 .row-proximo{background:var(--ambar-bg) !important;}
 .row-proximo:hover{background:#f5e9c9 !important;}
+.fila-grupo td{background:var(--gris-100) !important;font-size:11.5px;padding:8px 12px;border-bottom:1.5px solid var(--linea);}
+.fila-grupo:hover td{background:var(--gris-100) !important;}
 
 .empty-state{padding:48px 24px;text-align:center;color:var(--tinta-suave);}
 .empty-state .empty-icon{font-size:34px;margin-bottom:10px;}
@@ -556,6 +558,7 @@ td.wrap{white-space:normal;min-width:160px;}
   <div class="view" id="view-tes-alertas"></div>
   <div class="view" id="view-tes-listado"></div>
   <div class="view" id="view-tes-proveedores"></div>
+  <div class="view" id="view-tes-informe"></div>
 
 </div>
 
@@ -758,6 +761,7 @@ const state = {
   filters: {
     comexEstado: '', comexProveedor: '', comexSearch: '',
     tesEstado: '', tesProveedor: '', tesSearch: '',
+    infProveedor: '', infDesde: '', infHasta: '',
   },
 };
 
@@ -1207,6 +1211,7 @@ function renderShellForRole() {
       { id: 'tab-tes-calendario', label: 'Calendario de Pagos', icon: '📅', group: 'Tesorería' },
       { id: 'tab-tes-alertas', label: 'Alertas', icon: '⚠️', dot: true, group: 'Tesorería' },
       { id: 'tab-tes-listado', label: 'Listado de Pagos', icon: '📋', group: 'Tesorería' },
+      { id: 'tab-tes-informe', label: 'Informe Proveedores', icon: '📈', group: 'Tesorería' },
       { id: 'tab-admin-proveedores', label: 'Proveedores', icon: '🏭' },
     ],
     [ROLES.COMEX]: [
@@ -1218,6 +1223,7 @@ function renderShellForRole() {
       { id: 'tab-tes-calendario', label: 'Calendario de Pagos', icon: '📅' },
       { id: 'tab-tes-alertas', label: 'Alertas', icon: '⚠️', dot: true },
       { id: 'tab-tes-listado', label: 'Listado de Pagos', icon: '📋' },
+      { id: 'tab-tes-informe', label: 'Informe Proveedores', icon: '📈' },
       { id: 'tab-tes-proveedores', label: 'Proveedores', icon: '🏭' },
     ],
   };
@@ -1272,6 +1278,7 @@ function renderViewById(tabId) {
     'tab-tes-calendario': renderCalendario,
     'tab-tes-alertas': renderAlertas,
     'tab-tes-listado': renderListadoPagos,
+    'tab-tes-informe': renderInformeProveedores,
     'tab-tes-proveedores': renderProveedoresView,
   };
   if (map[tabId]) map[tabId]();
@@ -1551,6 +1558,177 @@ function renderTesListadoTable() {
       <tbody>${rows || `<tr><td colspan="7"><div class="empty-state">No hay resultados para este filtro.</div></td></tr>`}</tbody>
     </table>`;
 }
+
+// ============================================================
+// VISTA TESORERÍA — Informe por proveedor: facturas, pagos y
+// tiempo transcurrido desde la OC hasta el pago
+// ============================================================
+
+// Fecha de referencia de "Orden de Compra" para una orden.
+function fechaOCOrden(o) {
+  return o.fechaConfOC || o.dateInv || o.etd || null;
+}
+
+// Determina la fecha real de pago de un hito.
+// Si el hito fue marcado "pagado" mediante el modal de Gestión de Pago,
+// usamos la última fecha registrada en su historial (dato exacto).
+// Si el monto de pago viene directo de la orden (importación/edición manual,
+// sin paso por el modal), no hay fecha exacta de pago registrada: se usa la
+// fecha comprometida del hito como referencia aproximada.
+function obtenerInfoPagoHito(h) {
+  const hist = (h.historial || []).filter(x => x.accion === 'pagado');
+  if (hist.length) {
+    return { fecha: hist[hist.length - 1].fecha.slice(0, 10), aprox: false };
+  }
+  if (h.pagado) {
+    return { fecha: h.fecha || null, aprox: true };
+  }
+  return { fecha: null, aprox: false };
+}
+
+// Aplana todas las órdenes en filas: una fila por hito de pago (anticipo/saldo/único)
+function construirFilasInforme() {
+  return state.orders.flatMap(o => {
+    const fechaOC = fechaOCOrden(o);
+    return calcularHitos(o).map(h => {
+      const info = obtenerInfoPagoHito(h);
+      const dias = (info.fecha && fechaOC) ? daysBetween(parseISO(fechaOC), parseISO(info.fecha)) : null;
+      return {
+        proveedor: o.consignor,
+        ocFactura: o.invoice || o.orderRef || '—',
+        ordenId: o.id,
+        fechaOC,
+        hito: h.label,
+        monto: h.monto,
+        moneda: o.moneda,
+        fechaComprometida: h.fecha,
+        estado: estadoHito(h),
+        fechaPago: info.fecha,
+        pagoAprox: info.aprox,
+        dias,
+      };
+    });
+  });
+}
+
+function renderInformeProveedores() {
+  const view = document.getElementById('view-tes-informe');
+  const provNames = [...new Set(state.orders.map(o => o.consignor))].sort();
+
+  view.innerHTML = `
+    <div class="page-head">
+      <div><h1>Informe por proveedor</h1><p>Facturas/OC de cada proveedor, sus hitos de pago y el tiempo transcurrido desde la Orden de Compra hasta el pago.</p></div>
+      <div class="page-actions">
+        <button class="btn btn-ghost" onclick="exportarInformeProveedoresExcel()">⬇ Exportar Excel</button>
+      </div>
+    </div>
+    <div class="kpi-row" id="infKpiRow"></div>
+    <div class="panel">
+      <div class="filters-bar">
+        <span class="filter-label">Filtrar</span>
+        <select id="infProveedor">
+          <option value="">Todos los proveedores</option>
+          ${provNames.map(p => `<option value="${escapeHtml(p)}" ${state.filters.infProveedor === p ? 'selected' : ''}>${escapeHtml(p)}</option>`).join('')}
+        </select>
+        <span class="filter-label">OC desde</span>
+        <input type="date" id="infDesde" value="${escapeHtml(state.filters.infDesde)}">
+        <span class="filter-label">hasta</span>
+        <input type="date" id="infHasta" value="${escapeHtml(state.filters.infHasta)}">
+      </div>
+      <div class="table-wrap" id="infTable"></div>
+    </div>
+  `;
+
+  document.getElementById('infProveedor').addEventListener('change', (e) => { state.filters.infProveedor = e.target.value; renderInformeTabla(); });
+  document.getElementById('infDesde').addEventListener('change', (e) => { state.filters.infDesde = e.target.value; renderInformeTabla(); });
+  document.getElementById('infHasta').addEventListener('change', (e) => { state.filters.infHasta = e.target.value; renderInformeTabla(); });
+
+  renderInformeTabla();
+}
+
+function renderInformeTabla() {
+  const f = state.filters;
+  let filas = construirFilasInforme();
+  if (f.infProveedor) filas = filas.filter(r => r.proveedor === f.infProveedor);
+  if (f.infDesde) filas = filas.filter(r => r.fechaOC && r.fechaOC >= f.infDesde);
+  if (f.infHasta) filas = filas.filter(r => r.fechaOC && r.fechaOC <= f.infHasta);
+
+  filas.sort((a, b) => {
+    const p = (a.proveedor || '').localeCompare(b.proveedor || '');
+    if (p !== 0) return p;
+    const fa = a.fechaOC ? parseISO(a.fechaOC) : new Date(9999, 0, 1);
+    const fb = b.fechaOC ? parseISO(b.fechaOC) : new Date(9999, 0, 1);
+    return fa - fb;
+  });
+
+  // ---- KPIs ----
+  const conFechaPago = filas.filter(r => r.dias !== null);
+  const promDias = conFechaPago.length ? Math.round(conFechaPago.reduce((s, r) => s + r.dias, 0) / conFechaPago.length) : null;
+  const montoPorMoneda = {};
+  filas.filter(r => r.estado === 'pagado').forEach(r => { montoPorMoneda[r.moneda] = (montoPorMoneda[r.moneda] || 0) + (r.monto || 0); });
+  const ocsUnicas = new Set(filas.map(r => r.ordenId)).size;
+
+  document.getElementById('infKpiRow').innerHTML = `
+    <div class="kpi-card"><div class="kpi-label">OC / Facturas</div><div class="kpi-value">${ocsUnicas}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Hitos de pago</div><div class="kpi-value">${filas.length}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Promedio días OC → Pago</div><div class="kpi-value">${promDias !== null ? promDias + ' d' : '—'}</div><div class="kpi-sub">Sobre ${conFechaPago.length} pago(s) con fecha registrada</div></div>
+    ${Object.entries(montoPorMoneda).map(([mon, val]) => `<div class="kpi-card"><div class="kpi-label">Pagado en ${mon}</div><div class="kpi-value">${fmtMoney(val, mon)}</div></div>`).join('')}
+  `;
+
+  // ---- Tabla agrupada por proveedor ----
+  const badgeForEstado = { atrasado: 'badge-rojo', proximo: 'badge-ambar', vigente: 'badge-cyan', pagado: 'badge-verde' };
+  const labelForEstado = { atrasado: 'Atrasado', proximo: 'Próximo', vigente: 'Vigente', pagado: 'Pagado' };
+
+  let rowsHtml = '';
+  let lastProv = null;
+  filas.forEach(r => {
+    if (r.proveedor !== lastProv) {
+      lastProv = r.proveedor;
+      const totalProv = filas.filter(x => x.proveedor === r.proveedor).length;
+      rowsHtml += `<tr class="fila-grupo"><td colspan="9"><strong>${escapeHtml(r.proveedor || 'Sin proveedor')}</strong> <span style="color:var(--tinta-suave);font-weight:400;">· ${totalProv} hito(s)</span></td></tr>`;
+    }
+    const fechaPagoHtml = r.fechaPago
+      ? `${fmtDate(r.fechaPago)}${r.pagoAprox ? ` <span style="color:var(--tinta-suave);font-size:10px;" title="Sin registro exacto de pago; se usa la fecha comprometida como referencia">(aprox)</span>` : ''}`
+      : '—';
+    rowsHtml += `
+    <tr class="${r.estado === 'atrasado' ? 'row-atrasado' : r.estado === 'proximo' ? 'row-proximo' : ''}">
+      <td></td>
+      <td class="mono">${escapeHtml(r.ocFactura)}</td>
+      <td>${escapeHtml(r.hito)}</td>
+      <td class="num">${fmtMoney(r.monto, r.moneda)}</td>
+      <td class="mono">${fmtDate(r.fechaOC)}</td>
+      <td class="mono">${fmtDate(r.fechaComprometida)}</td>
+      <td><span class="badge ${badgeForEstado[r.estado]}">${labelForEstado[r.estado]}</span></td>
+      <td class="mono">${fechaPagoHtml}</td>
+      <td class="num">${r.dias !== null ? r.dias + ' d' : '—'}</td>
+    </tr>`;
+  });
+
+  document.getElementById('infTable').innerHTML = `
+    <table>
+      <thead><tr><th></th><th>OC / Factura</th><th>Hito</th><th>Monto</th><th>Fecha OC</th><th>Fecha comprometida</th><th>Estado</th><th>Fecha de pago</th><th>Días OC→Pago</th></tr></thead>
+      <tbody>${rowsHtml || `<tr><td colspan="9"><div class="empty-state">No hay resultados para este filtro.</div></td></tr>`}</tbody>
+    </table>`;
+}
+
+function exportarInformeProveedoresExcel() {
+  if (typeof XLSX === 'undefined') { toast('No se pudo cargar el motor de Excel', 'err'); return; }
+  const filas = construirFilasInforme();
+  const data = filas.map(r => ({
+    'Proveedor': r.proveedor, 'OC / Factura': r.ocFactura, 'Hito': r.hito,
+    'Monto': r.monto, 'Moneda': r.moneda, 'Fecha OC': r.fechaOC,
+    'Fecha comprometida': r.fechaComprometida, 'Estado': r.estado,
+    'Fecha de pago': r.fechaPago, 'Fecha aproximada (sin registro exacto)': r.pagoAprox ? 'Sí' : 'No',
+    'Días OC a Pago': r.dias,
+  }));
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(data);
+  XLSX.utils.book_append_sheet(wb, ws, 'Informe Proveedores');
+  const fecha = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `Informe_Proveedores_${fecha}.xlsx`);
+  toast('Excel generado correctamente', 'ok');
+}
+
 
 // ============================================================
 // VISTA COMEX — Base de datos original + crear nuevas órdenes
