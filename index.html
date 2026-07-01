@@ -266,7 +266,7 @@ a{color:var(--azul-cyan);text-decoration:none;}
 }
 .tab-group-label:first-child::before{display:none;}
 
-.view{display:none;padding:22px 24px 48px;max-width:1400px;width:100%;margin:0 auto;flex:1;}
+.view{display:none;padding:22px 24px 48px;max-width:1800px;width:100%;margin:0 auto;flex:1;}
 .view.active{display:block;}
 
 /* ---------- Page header ---------- */
@@ -326,6 +326,8 @@ a{color:var(--azul-cyan);text-decoration:none;}
 .filters-bar .filter-label{font-size:11px;font-weight:700;color:var(--tinta-suave);text-transform:uppercase;letter-spacing:.03em;}
 
 /* ---------- Table ---------- */
+.table-scroll-top{overflow-x:auto;overflow-y:hidden;height:16px;display:none;}
+.table-scroll-top-inner{height:1px;}
 .table-wrap{overflow-x:auto;}
 table{width:100%;border-collapse:collapse;font-size:12.5px;}
 thead th{
@@ -798,6 +800,57 @@ function uid(prefix) {
   return prefix + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 }
 
+// ---------- Barra de scroll superior sincronizada para tablas anchas ----------
+function initTopScrollbars() {
+  document.querySelectorAll('.table-wrap').forEach((wrap) => {
+    if (wrap.dataset.topScrollInit) return;
+    wrap.dataset.topScrollInit = '1';
+
+    const topBar = document.createElement('div');
+    topBar.className = 'table-scroll-top';
+    const inner = document.createElement('div');
+    inner.className = 'table-scroll-top-inner';
+    topBar.appendChild(inner);
+    wrap.parentNode.insertBefore(topBar, wrap);
+
+    let syncing = false;
+    topBar.addEventListener('scroll', () => {
+      if (syncing) return;
+      syncing = true;
+      wrap.scrollLeft = topBar.scrollLeft;
+      syncing = false;
+    });
+    wrap.addEventListener('scroll', () => {
+      if (syncing) return;
+      syncing = true;
+      topBar.scrollLeft = wrap.scrollLeft;
+      syncing = false;
+    });
+
+    const sync = () => {
+      const content = wrap.querySelector('table') || wrap.firstElementChild;
+      const contentWidth = content ? content.scrollWidth : wrap.scrollWidth;
+      inner.style.width = contentWidth + 'px';
+      const needsScroll = contentWidth > wrap.clientWidth + 2;
+      topBar.style.display = needsScroll ? 'block' : 'none';
+    };
+    wrap._syncTopScroll = sync;
+
+    const mo = new MutationObserver(sync);
+    mo.observe(wrap, { childList: true, subtree: true });
+    window.addEventListener('resize', sync);
+    sync();
+  });
+}
+
+function refreshTopScrollbars() {
+  requestAnimationFrame(() => {
+    document.querySelectorAll('.table-wrap').forEach((wrap) => {
+      if (wrap._syncTopScroll) wrap._syncTopScroll();
+    });
+  });
+}
+
 // ---------- Toast ----------
 function toast(msg, type) {
   const wrap = document.getElementById('toastWrap');
@@ -1134,6 +1187,7 @@ async function boot() {
   document.getElementById('loginScreen').style.display = 'none';
   document.getElementById('appShell').classList.add('active');
   renderShellForRole();
+  initTopScrollbars();
 }
 
 function renderShellForRole() {
@@ -1222,6 +1276,7 @@ function renderViewById(tabId) {
   };
   if (map[tabId]) map[tabId]();
   updateAlertDot();
+  refreshTopScrollbars();
 }
 
 function updateAlertDot() {
