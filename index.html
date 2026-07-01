@@ -1807,6 +1807,7 @@ function renderComexBD() {
       <div><h1>Carga en tránsito</h1><p>${state.orders.length} órdenes registradas. Datos originados desde Odoo / control de Comex.</p></div>
       <div class="page-actions">
         <button class="btn btn-ghost" onclick="exportarRespaldoExcel()">⬇ Respaldo Excel</button>
+        ${state.session.role === ROLES.ADMIN ? `<button class="btn btn-secondary" onclick="restaurarDatosMaestros()">⚠ Restaurar catálogo maestro (215 órdenes)</button>` : ''}
       </div>
     </div>
     <div class="panel">
@@ -1880,6 +1881,23 @@ document.addEventListener('click', (e) => {
     document.querySelectorAll('.multiselect-panel.open').forEach(p => p.classList.remove('open'));
   }
 });
+
+function restaurarDatosMaestros() {
+  const actuales = state.orders.length;
+  const confirmado = confirm(
+    `Esto va a REEMPLAZAR las ${actuales} órdenes actuales por las 215 del Excel maestro más reciente.\n\n` +
+    `Cualquier orden u edición hecha DESPUÉS de ese Excel (que no esté reflejada ahí) se va a perder.\n\n` +
+    `¿Confirmas que quieres continuar?`
+  );
+  if (!confirmado) return;
+
+  // Copia profunda del seed original (215 órdenes) para no compartir referencias
+  state.orders = JSON.parse(JSON.stringify(ORDERS_SEED));
+  setOrders(state.orders); // guarda en localStorage y dispara el sync a Drive automáticamente
+
+  toast(`Catálogo restaurado: ${state.orders.length} órdenes. Sincronizando con Drive…`, 'ok');
+  renderViewById('tab-comex-bd');
+}
 
 function renderComexTable() {
   const f = state.filters;
