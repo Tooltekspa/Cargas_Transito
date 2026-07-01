@@ -1881,18 +1881,28 @@ function renderComexTable() {
 
   const html = rows.map(o => `
     <tr>
-      <td class="mono">${escapeHtml(o.orderRef ?? '—')}</td>
-      <td class="wrap">${escapeHtml(o.consignor)}</td>
-      <td class="mono">${escapeHtml(o.invoice || '—')}</td>
-      <td>${escapeHtml(o.trans)}/${escapeHtml(o.mode)}</td>
+      <td>${escapeHtml(o.trans||'—')}</td>
+      <td>${escapeHtml(o.mode||'—')}</td>
+      <td class="wrap">${escapeHtml(o.consignor||'—')}</td>
+      <td class="mono">${escapeHtml(o.invoice ?? '—')}</td>
+      <td class="mono">${fmtDate(o.dateInv)}</td>
+      <td class="mono">${escapeHtml(String(o.orderRef ?? '—'))}</td>
+      <td class="mono">${fmtDate(o.fechaConfOC)}</td>
+      <td class="mono">${escapeHtml(String(o.house ?? '—'))}</td>
       <td>${escapeHtml(o.origin || '—')}</td>
       <td class="mono">${fmtDate(o.etd)}</td>
+      <td class="num">${escapeHtml(String(o.leadtime ?? '—'))}</td>
       <td class="mono">${fmtDate(o.eta)}</td>
+      <td class="num">${escapeHtml(String(o.transitTime ?? '—'))}</td>
+      <td class="num">${escapeHtml(String(o.weight ?? '—'))}</td>
+      <td class="num">${escapeHtml(String(o.volume ?? '—'))}</td>
+      <td class="num">${escapeHtml(String(o.qty ?? '—'))}</td>
+      <td>${escapeHtml(o.uq || '—')}</td>
       <td><span class="badge ${statusBadge[o.status]||'badge-gris'}">${escapeHtml(o.status||'—')}</span></td>
+      <td class="mono">${escapeHtml(String(o.din ?? '—'))}</td>
       <td>${escapeHtml(o.statusDoc||'—')}</td>
       <td class="num">${fmtMoney(o.monto, o.moneda)}</td>
       <td class="mono">${escapeHtml(o.vencimiento||'—')}</td>
-      <td class="num">${fmtMoney(o.pendiente, o.moneda)}</td>
       <td>
         <button class="btn btn-ghost btn-sm" onclick="abrirDetalleOrden('${o.id}')">Ver</button>
         <button class="btn btn-ghost btn-sm" onclick="abrirModalEditarOrden('${o.id}')">Editar</button>
@@ -1902,10 +1912,13 @@ function renderComexTable() {
   document.getElementById('comexTable').innerHTML = `
     <table>
       <thead><tr>
-        <th>OC</th><th>Proveedor</th><th>Invoice</th><th>Trans/Modo</th><th>Origen</th>
-        <th>ETD</th><th>ETA</th><th>Status</th><th>Status Docs</th><th>Monto</th><th>Condición pago</th><th>Pendiente</th><th></th>
+        <th>Trans</th><th>Mode</th><th>Consignor Name</th><th>Invoice</th><th>Date Inv.</th>
+        <th>Order Ref</th><th>Fecha Conf.OC</th><th>House</th><th>Origin</th><th>ETD</th>
+        <th>Leadtime</th><th>ETA</th><th>Transit time</th><th>Weight</th><th>Volume</th>
+        <th>QTY</th><th>UQ</th><th>status</th><th>DIN</th><th>Status Documentacion</th>
+        <th>Monto</th><th>Vencimiento</th><th></th>
       </tr></thead>
-      <tbody>${html || `<tr><td colspan="13"><div class="empty-state">No hay resultados para este filtro.</div></td></tr>`}</tbody>
+      <tbody>${html || `<tr><td colspan="22"><div class="empty-state">No hay resultados para este filtro.</div></td></tr>`}</tbody>
     </table>`;
 }
 
