@@ -679,6 +679,7 @@ function setProveedores(p) { localStorage.setItem(STORAGE_KEYS.PROVEEDORES, JSON
 const DRIVE_SYNC_URL_KEY = 'tooltek_ctt_drive_url';
 let syncDriveTimer = null;
 let syncEnProgreso = false;
+let cambiosPendientesSync = false;
 
 const DRIVE_SYNC_URL_DEFAULT = 'https://script.google.com/macros/s/AKfycbxHjtk7FLdyx1UyhdVFLyGHaGgpyYEiKCBRx1gJ3gdqIriiP0uAZTtt2CBgLwsE1DZL/exec';
 
@@ -689,12 +690,24 @@ function setDriveSyncUrl(url) {
   localStorage.setItem(DRIVE_SYNC_URL_KEY, url.trim());
 }
 
+// Sync "rápido": se dispara ~1s después de cada guardado (nueva orden,
+// edición, pago marcado, etc.), para no golpear el servidor en cada tecla.
 function programarSyncDrive() {
   if (!getDriveSyncUrl()) return; // sin URL configurada, no hay nada que sincronizar
+  cambiosPendientesSync = true;
   clearTimeout(syncDriveTimer);
   setSyncIndicator('pendiente');
-  syncDriveTimer = setTimeout(ejecutarSyncDrive, 1500);
+  syncDriveTimer = setTimeout(ejecutarSyncDrive, 1000);
 }
+
+// Sync "de respaldo": corre cada 5 segundos y sincroniza si quedó algún
+// cambio pendiente que el timer rápido no haya alcanzado a mandar todavía
+// (por ediciones seguidas que van reiniciando el debounce de arriba).
+setInterval(() => {
+  if (cambiosPendientesSync && !syncEnProgreso) {
+    ejecutarSyncDrive();
+  }
+}, 5000);
 
 async function ejecutarSyncDrive() {
   const url = getDriveSyncUrl();
@@ -718,6 +731,7 @@ async function ejecutarSyncDrive() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const json = await res.json();
     if (!json.ok) throw new Error(json.error || 'Respuesta de error del servidor');
+    cambiosPendientesSync = false;
     setSyncIndicator('ok');
   } catch (err) {
     setSyncIndicator('error');
