@@ -1036,6 +1036,24 @@ function esFechaValida(v) {
   return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v);
 }
 
+// Transit time = días entre ETD y ETA. Siempre calculado, nunca el dato crudo
+// importado (que en el Excel original venía a veces roto: "#VALOR!", texto, etc).
+function calcTransitTime(o) {
+  if (esFechaValida(o.etd) && esFechaValida(o.eta)) {
+    return daysBetween(parseISO(o.etd), parseISO(o.eta));
+  }
+  return null;
+}
+
+// Leadtime (plazo de entrega) = días entre Fecha Conf.OC y ETA. Igual que
+// transitTime, siempre calculado en vivo a partir de las fechas actuales.
+function calcLeadtime(o) {
+  if (esFechaValida(o.fechaConfOC) && esFechaValida(o.eta)) {
+    return daysBetween(parseISO(o.fechaConfOC), parseISO(o.eta));
+  }
+  return null;
+}
+
 // Estado de un hito respecto a hoy: 'pagado' | 'atrasado' | 'proximo' | 'vigente'
 function estadoHito(hito) {
   if (hito.pagado) return 'pagado';
@@ -1884,6 +1902,7 @@ function renderComexTable() {
       <td>${escapeHtml(o.trans||'—')}</td>
       <td>${escapeHtml(o.mode||'—')}</td>
       <td class="wrap">${escapeHtml(o.consignor||'—')}</td>
+      <td class="wrap">${escapeHtml(o.forwarder||'—')}</td>
       <td class="mono">${escapeHtml(o.invoice ?? '—')}</td>
       <td class="mono">${fmtDate(o.dateInv)}</td>
       <td class="mono">${escapeHtml(String(o.orderRef ?? '—'))}</td>
@@ -1891,11 +1910,9 @@ function renderComexTable() {
       <td class="mono">${escapeHtml(String(o.house ?? '—'))}</td>
       <td>${escapeHtml(o.origin || '—')}</td>
       <td class="mono">${fmtDate(o.etd)}</td>
-      <td class="num">${escapeHtml(String(o.leadtime ?? '—'))}</td>
+      <td class="num">${calcLeadtime(o) ?? '—'}</td>
       <td class="mono">${fmtDate(o.eta)}</td>
-      <td class="num">${escapeHtml(String(o.transitTime ?? '—'))}</td>
-      <td class="num">${escapeHtml(String(o.weight ?? '—'))}</td>
-      <td class="num">${escapeHtml(String(o.volume ?? '—'))}</td>
+      <td class="num">${calcTransitTime(o) ?? '—'}</td>
       <td class="num">${escapeHtml(String(o.qty ?? '—'))}</td>
       <td>${escapeHtml(o.uq || '—')}</td>
       <td><span class="badge ${statusBadge[o.status]||'badge-gris'}">${escapeHtml(o.status||'—')}</span></td>
@@ -1921,14 +1938,14 @@ function renderComexTable() {
   document.getElementById('comexTable').innerHTML = `
     <table>
       <thead><tr>
-        <th>Trans</th><th>Mode</th><th>Consignor Name</th><th>Invoice</th><th>Date Inv.</th>
+        <th>Trans</th><th>Mode</th><th>Consignor Name</th><th>Forwarder</th><th>Invoice</th><th>Date Inv.</th>
         <th>Order Ref</th><th>Fecha Conf.OC</th><th>House</th><th>Origin</th><th>ETD</th>
-        <th>Leadtime</th><th>ETA</th><th>Transit time</th><th>Weight</th><th>Volume</th>
+        <th>Leadtime</th><th>ETA</th><th>Transit time</th>
         <th>QTY</th><th>UQ</th><th>status</th><th>DIN</th><th>Status Documentacion</th>
         <th>Monto</th><th>Vencimiento</th><th>Pgdo</th><th>FPP</th><th>Pago Anticipo</th><th>Fecha</th>
         <th>Pago Saldo</th><th>Fecha</th><th>Pendiente</th><th>Operaciones</th><th>Tesoreria</th><th></th>
       </tr></thead>
-      <tbody>${html || `<tr><td colspan="31"><div class="empty-state">No hay resultados para este filtro.</div></td></tr>`}</tbody>
+      <tbody>${html || `<tr><td colspan="30"><div class="empty-state">No hay resultados para este filtro.</div></td></tr>`}</tbody>
     </table>`;
 }
 
@@ -2036,12 +2053,15 @@ function crearNuevaOrden() {
     orderRef: Number(document.getElementById('f_orderRef').value) || document.getElementById('f_orderRef').value,
     fechaConfOC: document.getElementById('f_fechaConfOC').value || null,
     house: document.getElementById('f_house').value || null,
+    forwarder: null,
     origin: document.getElementById('f_origin').value || null,
     etd: document.getElementById('f_etd').value || null,
     leadtime: 0,
     eta: document.getElementById('f_eta').value || null,
     transitTime: null,
+    tipoContenedor: null,
     weight: null, volume: null, qty: null, uq: null,
+    bultosPallets: null, bultosCajas: null,
     status: document.getElementById('f_status').value,
     din: null,
     statusDoc: document.getElementById('f_statusDoc').value,
@@ -2054,6 +2074,7 @@ function crearNuevaOrden() {
     fechaSaldo: null,
     pendiente: Number(document.getElementById('f_monto').value),
     moneda: document.getElementById('f_moneda').value,
+    historialCambios: [],
   };
 
   state.orders.push(nueva);
@@ -2097,9 +2118,15 @@ function abrirModalEditarOrden(orderId) {
           </div>
           <div class="field"><label>Origen (código puerto)</label><input type="text" id="e_origin" value="${escapeHtml(o.origin||'')}"></div>
           <div class="field"><label>House / BL</label><input type="text" id="e_house" value="${escapeHtml(o.house||'')}"></div>
+          <div class="field"><label>Forwarder / Transportista</label><input type="text" id="e_forwarder" value="${escapeHtml(o.forwarder||'')}"></div>
           <div class="field"><label>Fecha conf. OC</label><input type="date" id="e_fechaConfOC" value="${esFechaValida(o.fechaConfOC)?o.fechaConfOC:''}"></div>
           <div class="field"><label>ETD</label><input type="date" id="e_etd" value="${esFechaValida(o.etd)?o.etd:''}"></div>
-          <div class="field"><label>ETA</label><input type="date" id="e_eta" value="${esFechaValida(o.eta)?o.eta:''}"></div>
+          <div class="field"><label>ETA</label><input type="date" id="e_eta" value="${esFechaValida(o.eta)?o.eta:''}" data-eta-original="${esFechaValida(o.eta)?o.eta:''}"></div>
+          <div class="field"><label>Tipo de contenedor</label><input type="text" id="e_tipoContenedor" placeholder="Ej: 40HQ, 20GP" value="${escapeHtml(o.tipoContenedor||'')}"></div>
+          <div class="field"><label>Peso (kg)</label><input type="number" step="0.01" id="e_weight" value="${o.weight ?? ''}"></div>
+          <div class="field"><label>Volumen (m³)</label><input type="number" step="0.001" id="e_volume" value="${o.volume ?? ''}"></div>
+          <div class="field"><label>Bultos — pallets</label><input type="number" id="e_bultosPallets" value="${o.bultosPallets ?? ''}"></div>
+          <div class="field"><label>Bultos — cajas</label><input type="number" id="e_bultosCajas" value="${o.bultosCajas ?? ''}"></div>
           <div class="field"><label>Status</label>
             <select id="e_status">${STATUS_OC.map(s => `<option value="${s}" ${s===o.status?'selected':''}>${s}</option>`).join('')}</select>
           </div>
@@ -2117,6 +2144,10 @@ function abrirModalEditarOrden(orderId) {
           <div class="field"><label>Fecha de anticipo</label><input type="date" id="e_fechaAnticipo" value="${esFechaValida(o.fechaAnticipo)?o.fechaAnticipo:''}"></div>
           <div class="field"><label>Pago saldo registrado</label><input type="number" step="0.01" id="e_pagoSaldo" value="${o.pagoSaldo ?? 0}"></div>
           <div class="field"><label>Fecha de saldo</label><input type="date" id="e_fechaSaldo" value="${esFechaValida(o.fechaSaldo)?o.fechaSaldo:''}"></div>
+          <div class="field full">
+            <label>Observación de este cambio <span id="e_obsRequerida" style="display:none;color:var(--rojo);">(obligatorio: cambiaste el ETA)</span></label>
+            <textarea id="e_observacion" rows="2" placeholder="Ej: Atraso por congestión en puerto, cambio de nave, corrección de monto, etc."></textarea>
+          </div>
         </div>
       </form>
     </div>
@@ -2135,6 +2166,40 @@ function guardarEdicionOrden(orderId) {
   const monto = Number(document.getElementById('e_monto').value);
   const pagoAnticipo = Number(document.getElementById('e_pagoAnticipo').value) || 0;
   const pagoSaldo = Number(document.getElementById('e_pagoSaldo').value) || 0;
+  const nuevoEta = document.getElementById('e_eta').value || null;
+  const etaOriginal = document.getElementById('e_eta').dataset.etaOriginal || null;
+  const observacion = document.getElementById('e_observacion').value.trim();
+
+  // Si el ETA cambió respecto al valor con el que se abrió el formulario,
+  // es obligatorio dejar una observación registrada (atraso, cambio de nave, etc.)
+  const etaCambio = etaOriginal && nuevoEta && etaOriginal !== nuevoEta;
+  if (etaCambio && !observacion) {
+    document.getElementById('e_obsRequerida').style.display = 'inline';
+    document.getElementById('e_observacion').focus();
+    toast('El ETA cambió — la observación es obligatoria', 'err');
+    return;
+  }
+
+  o.historialCambios = o.historialCambios || [];
+  if (etaCambio) {
+    o.historialCambios.push({
+      fecha: new Date().toISOString(),
+      campo: 'ETA',
+      valorAnterior: etaOriginal,
+      valorNuevo: nuevoEta,
+      nota: observacion,
+      usuario: state.session.nombre || state.session.email,
+    });
+  } else if (observacion) {
+    o.historialCambios.push({
+      fecha: new Date().toISOString(),
+      campo: 'Observación general',
+      valorAnterior: null,
+      valorNuevo: null,
+      nota: observacion,
+      usuario: state.session.nombre || state.session.email,
+    });
+  }
 
   o.consignor = document.getElementById('e_consignor').value;
   o.orderRef = Number(document.getElementById('e_orderRef').value) || document.getElementById('e_orderRef').value;
@@ -2143,9 +2208,15 @@ function guardarEdicionOrden(orderId) {
   o.mode = document.getElementById('e_mode').value;
   o.origin = document.getElementById('e_origin').value || null;
   o.house = document.getElementById('e_house').value || null;
+  o.forwarder = document.getElementById('e_forwarder').value || null;
   o.fechaConfOC = document.getElementById('e_fechaConfOC').value || null;
   o.etd = document.getElementById('e_etd').value || null;
-  o.eta = document.getElementById('e_eta').value || null;
+  o.eta = nuevoEta;
+  o.tipoContenedor = document.getElementById('e_tipoContenedor').value || null;
+  o.weight = document.getElementById('e_weight').value !== '' ? Number(document.getElementById('e_weight').value) : null;
+  o.volume = document.getElementById('e_volume').value !== '' ? Number(document.getElementById('e_volume').value) : null;
+  o.bultosPallets = document.getElementById('e_bultosPallets').value !== '' ? Number(document.getElementById('e_bultosPallets').value) : null;
+  o.bultosCajas = document.getElementById('e_bultosCajas').value !== '' ? Number(document.getElementById('e_bultosCajas').value) : null;
   o.status = document.getElementById('e_status').value;
   o.statusDoc = document.getElementById('e_statusDoc').value;
   o.monto = monto;
@@ -2282,6 +2353,15 @@ function abrirDetalleOrden(orderId) {
     </tr>`;
   }).join('');
 
+  const historialHtml = (o.historialCambios || []).slice().reverse().map(h => `
+    <tr>
+      <td class="mono">${fmtDate(h.fecha.slice(0,10))}</td>
+      <td>${escapeHtml(h.campo)}</td>
+      <td class="mono">${escapeHtml(h.valorAnterior ?? '—')} → ${escapeHtml(h.valorNuevo ?? '—')}</td>
+      <td class="wrap">${escapeHtml(h.nota || '—')}</td>
+      <td>${escapeHtml(h.usuario || '—')}</td>
+    </tr>`).join('');
+
   const modal = document.getElementById('modalOverlay');
   modal.querySelector('.modal').className = 'modal modal-lg';
   modal.querySelector('.modal').innerHTML = `
@@ -2290,10 +2370,15 @@ function abrirDetalleOrden(orderId) {
       <div class="detail-grid">
         <div class="detail-item"><dt>Invoice</dt><dd class="mono">${escapeHtml(o.invoice || '—')}</dd></div>
         <div class="detail-item"><dt>House / BL</dt><dd class="mono">${escapeHtml(o.house || '—')}</dd></div>
+        <div class="detail-item"><dt>Forwarder</dt><dd>${escapeHtml(o.forwarder || '—')}</dd></div>
         <div class="detail-item"><dt>Transporte</dt><dd>${escapeHtml(o.trans)}/${escapeHtml(o.mode)} desde ${escapeHtml(o.origin||'—')}</dd></div>
         <div class="detail-item"><dt>Status</dt><dd>${escapeHtml(o.status||'—')}</dd></div>
         <div class="detail-item"><dt>ETD</dt><dd class="mono">${fmtDate(o.etd)}</dd></div>
         <div class="detail-item"><dt>ETA</dt><dd class="mono">${fmtDate(o.eta)}</dd></div>
+        <div class="detail-item"><dt>Transit time / Leadtime</dt><dd class="mono">${calcTransitTime(o) ?? '—'} d / ${calcLeadtime(o) ?? '—'} d</dd></div>
+        <div class="detail-item"><dt>Tipo de contenedor</dt><dd>${escapeHtml(o.tipoContenedor || '—')}</dd></div>
+        <div class="detail-item"><dt>Peso / Volumen</dt><dd class="mono">${o.weight ?? '—'} kg / ${o.volume ?? '—'} m³</dd></div>
+        <div class="detail-item"><dt>Bultos (pallets / cajas)</dt><dd class="mono">${o.bultosPallets ?? '—'} PLT / ${o.bultosCajas ?? '—'} CTN</dd></div>
         <div class="detail-item"><dt>Status Documentación</dt><dd>${escapeHtml(o.statusDoc||'—')}</dd></div>
         <div class="detail-item"><dt>Condición de pago</dt><dd>${escapeHtml(o.vencimiento||'—')}</dd></div>
         <div class="detail-item"><dt>Monto total</dt><dd class="mono">${fmtMoney(o.monto, o.moneda)}</dd></div>
@@ -2304,6 +2389,12 @@ function abrirDetalleOrden(orderId) {
         <thead><tr><th>Hito</th><th>Monto</th><th>Fecha</th><th>Estado</th>${puedeGestionar?'<th></th>':''}</tr></thead>
         <tbody>${hitosHtml}</tbody>
       </table></div>
+      ${historialHtml ? `
+      <p class="section-title" style="margin-top:22px;">Historial de cambios (atrasos, cambios de nave/montos, etc.)</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Fecha</th><th>Campo</th><th>Cambio</th><th>Observación</th><th>Usuario</th></tr></thead>
+        <tbody>${historialHtml}</tbody>
+      </table></div>` : ''}
     </div>
     <div class="modal-foot"><button class="btn btn-secondary" onclick="cerrarModal()">Cerrar</button></div>
   `;
