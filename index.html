@@ -806,7 +806,7 @@ const state = {
 // ---------- Utilidades de formato ----------
 function fmtMoney(val, moneda) {
   if (val === null || val === undefined || isNaN(val)) return '—';
-  const symbols = { USD: 'US$', EUR: '€', GBP: '£', CLP: '$' };
+  const symbols = { USD: 'US$', EUR: '€', GBP: '£', CLP: '$', CNY: '¥' };
   const sym = symbols[moneda] || '';
   return sym + Number(val).toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -1904,12 +1904,14 @@ function renderComexTable() {
       <td class="num">${fmtMoney(o.monto, o.moneda)}</td>
       <td class="mono">${escapeHtml(o.vencimiento||'—')}</td>
       <td>${escapeHtml(o.pgdo||'—')}</td>
-      <td class="mono">${fmtDate(o.fechaAnticipo)}</td>
+      <td class="mono">${fmtDate(o.fpp)}</td>
       <td class="num">${fmtMoney(o.pagoAnticipo, o.moneda)}</td>
       <td class="mono">${fmtDate(o.fechaAnticipo)}</td>
       <td class="num">${fmtMoney(o.pagoSaldo, o.moneda)}</td>
       <td class="mono">${fmtDate(o.fechaSaldo)}</td>
       <td class="num">${fmtMoney(o.pendiente, o.moneda)}</td>
+      <td class="wrap">${escapeHtml(o.operaciones||'—')}</td>
+      <td class="wrap">${escapeHtml(o.tesoreria||'—')}</td>
       <td>
         <button class="btn btn-ghost btn-sm" onclick="abrirDetalleOrden('${o.id}')">Ver</button>
         <button class="btn btn-ghost btn-sm" onclick="abrirModalEditarOrden('${o.id}')">Editar</button>
@@ -1924,9 +1926,9 @@ function renderComexTable() {
         <th>Leadtime</th><th>ETA</th><th>Transit time</th><th>Weight</th><th>Volume</th>
         <th>QTY</th><th>UQ</th><th>status</th><th>DIN</th><th>Status Documentacion</th>
         <th>Monto</th><th>Vencimiento</th><th>Pgdo</th><th>FPP</th><th>Pago Anticipo</th><th>Fecha</th>
-        <th>Pago Saldo</th><th>Fecha</th><th>Pendiente</th><th></th>
+        <th>Pago Saldo</th><th>Fecha</th><th>Pendiente</th><th>Operaciones</th><th>Tesoreria</th><th></th>
       </tr></thead>
-      <tbody>${html || `<tr><td colspan="29"><div class="empty-state">No hay resultados para este filtro.</div></td></tr>`}</tbody>
+      <tbody>${html || `<tr><td colspan="31"><div class="empty-state">No hay resultados para este filtro.</div></td></tr>`}</tbody>
     </table>`;
 }
 
