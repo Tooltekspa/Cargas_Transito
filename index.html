@@ -1205,14 +1205,22 @@ function refrescarVistaActual() {
 // ============================================================
 
 async function boot() {
+  // Se detecta ANTES de seedIfEmpty(), porque esa función rellena
+  // localStorage con el seed original si está vacío — si chequeáramos
+  // después, siempre parecería que "ya había datos locales".
+  const hayDatosLocales = !!localStorage.getItem(STORAGE_KEYS.ORDERS);
+
   seedIfEmpty();
   state.session = getSession();
 
-  // Si hay un respaldo en Drive configurado, intenta traer la versión más
-  // reciente antes de mostrar la app. Si falla (sin conexión), sigue con
-  // lo que ya hay en localStorage — eso es lo que permite "rescatar" en
-  // una emergencia si el navegador se vacía o se cambia de equipo.
-  if (getDriveSyncUrl()) {
+  // Solo se trae el respaldo de Drive si este navegador NO tenía datos
+  // locales todavía (primera vez en un equipo nuevo, o localStorage
+  // vacío/borrado) — eso es lo que permite "rescatar" en una emergencia.
+  // Si ya había datos locales, NUNCA se sobrescriben con Drive: Drive es
+  // solo un respaldo de salida (push), no una fuente que pise lo local,
+  // porque el guardado es asíncrono y podía perder ediciones recientes
+  // si el GET llegaba antes de que el POST previo terminara de guardar.
+  if (!hayDatosLocales && getDriveSyncUrl()) {
     await cargarDesdeDrive();
   }
 
